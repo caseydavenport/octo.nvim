@@ -351,6 +351,149 @@ function FileEntry:load_buffers(left_winid, right_winid)
   self:show_diff()
 end
 
+---Generate unified diff lines from the patch, with a line map for comment routing.
+---Each entry in the line_map is { side = "LEFT"|"RIGHT", line = <original_line_number> }.
+---Context lines map to "RIGHT" (the new file side) since that's where GitHub anchors them.
+---@return string[] lines, table[] line_map
+function FileEntry:_generate_unified_lines()
+  local lines = {}
+  local line_map = {}
+
+  if not self.patch then
+    -- No patch (e.g., binary or renamed without content change)
+    -- Show the right (new) version
+    for i, l in ipairs(self.right_lines) do
+      table.insert(lines, l)
+      table.insert(line_map, { side = "RIGHT", line = i })
+    end
+    return lines, line_map
+  end
+
+  local hunk_strings = vim.split(self.patch:gsub("^@@", ""), "\n@@")
+  for _, hunk in ipairs(hunk_strings) do
+    local hunk_lines = vim.split(hunk, "\n")
+    local header = hunk_lines[1]
+
+    -- Parse hunk header
+    local left_start, right_start
+    local _, _, ls, _, rs = string.find(header, "^%s*%-(%d+),(%d+)%s+%+(%d+),(%d+)%s*@@")
+    if ls then
+      left_start = tonumber(ls)
+      right_start = tonumber(rs)
+    else
+      _, _, ls, _, rs = string.find(header, "^%s*%-(%d+),(%d+)%s+%+(%d+)%s*@@")
+      if ls then
+        left_start = tonumber(ls)
+        right_start = tonumber(rs)
+      end
+    end
+
+    if left_start and right_start then
+      -- Add hunk header as a separator
+      table.insert(lines, "@@" .. header)
+      table.insert(line_map, { side = "HEADER", line = 0 })
+
+      local left_cur = left_start
+      local right_cur = right_start
+
+      for j = 2, #hunk_lines do
+        local l = hunk_lines[j]
+        if l == "" and j == #hunk_lines then
+          -- Trailing empty line from split, skip
+          break
+        end
+
+        local prefix = l:sub(1, 1)
+        if prefix == "-" then
+          table.insert(lines, l)
+          table.insert(line_map, { side = "LEFT", line = left_cur })
+          left_cur = left_cur + 1
+        elseif prefix == "+" then
+          table.insert(lines, l)
+          table.insert(line_map, { side = "RIGHT", line = right_cur })
+          right_cur = right_cur + 1
+        else
+          -- Context line
+          table.insert(lines, l)
+          table.insert(line_map, { side = "RIGHT", line = right_cur })
+          left_cur = left_cur + 1
+          right_cur = right_cur + 1
+        end
+      end
+    end
+  end
+
+  return lines, line_map
+end
+
+---Load a unified diff buffer into a single window.
+---@param winid integer
+function FileEntry:load_unified_buffer(winid)
+  local diff_lines, line_map = self:_generate_unified_lines()
+
+  -- Create or reuse the unified buffer
+  local current_review = require("octo.reviews").get_current_review()
+  if not current_review then
+    return
+  end
+
+  local bufname = string.format(
+    "octo://%s/review/%s/file/UNIFIED/%s",
+    self.pull_request.repo,
+    current_review.id,
+    self.path
+  )
+  local existing_bufnr = utils.find_named_buffer(bufname)
+  local bufnr
+  if existing_bufnr then
+    bufnr = existing_bufnr
+  else
+    bufnr = vim.api.nvim_create_buf(false, false)
+    vim.api.nvim_buf_set_name(bufnr, bufname)
+  end
+
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, diff_lines)
+  vim.bo[bufnr].modified = false
+  vim.bo[bufnr].modifiable = false
+  vim.bo[bufnr].buftype = "nofile"
+
+  -- Store unified diff metadata on the buffer
+  vim.api.nvim_buf_set_var(bufnr, "octo_diff_props", {
+    path = self.path,
+    split = "UNIFIED",
+  })
+  vim.api.nvim_buf_set_var(bufnr, "octo_unified_line_map", line_map)
+
+  -- Track the buffer
+  self.unified_bufid = bufnr
+  -- Set left/right bufid to the same so existing code doesn't nil-deref
+  self.left_bufid = bufnr
+  self.right_bufid = bufnr
+  self.left_winid = winid
+  self.right_winid = winid
+  table.insert(self.associated_bufs, bufnr)
+
+  -- Show in window
+  vim.api.nvim_win_set_buf(winid, bufnr)
+  M._configure_buffer(bufnr)
+
+  -- Set filetype for syntax highlighting based on diff
+  vim.api.nvim_buf_call(bufnr, function()
+    vim.bo.filetype = "diff"
+  end)
+
+  -- Apply window options (just the single window)
+  for k, v in pairs(FileEntry.winopts) do
+    vim.api.nvim_set_option_value(k, v, { win = winid, scope = "local" })
+  end
+  -- Disable diff mode for the unified view (it's not a vim diff)
+  vim.api.nvim_set_option_value("diff", false, { win = winid, scope = "local" })
+
+  -- Place signs for threads
+  self:place_signs_unified()
+end
+
 -- activate the diff between right and left panels
 function FileEntry:show_diff()
   for _, bufid in ipairs { self.left_bufid, self.right_bufid } do
@@ -501,6 +644,83 @@ function FileEntry:_place_signs_with_virtual_text(show_virtual_text)
         end
       end
     end
+  end
+end
+
+---Place signs for threads in a unified diff buffer.
+function FileEntry:place_signs_unified()
+  local current_review = require("octo.reviews").get_current_review()
+  if not current_review or not self.unified_bufid then
+    return
+  end
+
+  local bufnr = self.unified_bufid
+  signs.unplace(bufnr)
+  vim.api.nvim_buf_clear_namespace(bufnr, constants.OCTO_REVIEW_COMMENTS_NS, 0, -1)
+
+  local ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+  if not ok or not line_map then
+    return
+  end
+
+  -- Place comment range signs on all non-header lines
+  for display_line, entry in ipairs(line_map) do
+    if entry.side ~= "HEADER" then
+      signs.place("octo_comment_range", bufnr, display_line - 1)
+    end
+  end
+
+  -- Place thread signs
+  local review_level = current_review:get_level()
+  local threads = vim.tbl_values(current_review.threads)
+  for _, thread in ipairs(threads) do
+    if thread.path ~= self.path then
+      goto continue
+    end
+
+    local sign = "octo_thread"
+    if thread.isOutdated then
+      sign = sign .. "_outdated"
+    elseif thread.isResolved then
+      sign = sign .. "_resolved"
+    end
+
+    for _, comment in ipairs(thread.comments.nodes) do
+      if comment.state == "PENDING" then
+        sign = sign .. "_pending"
+      end
+
+      local dominated = (review_level == "PR")
+        or (review_level == "COMMIT" and current_review.layout.right:abbrev() == comment.originalCommit.abbreviatedOid)
+      if dominated then
+        -- Find the display line(s) that match this thread
+        local target_side = thread.diffSide
+        local start_line = review_level == "COMMIT" and thread.originalLine or thread.startLine
+        local end_line = review_level == "COMMIT" and thread.originalLine or thread.line
+
+        for display_line, entry in ipairs(line_map) do
+          if entry.side == target_side and entry.line >= start_line and entry.line <= end_line then
+            signs.place(sign, bufnr, display_line - 1)
+
+            -- Virtual text on first matching line
+            if entry.line == start_line then
+              local last_date = comment.lastEditedAt ~= vim.NIL and comment.lastEditedAt or comment.createdAt
+              local comments_count = #thread.comments.nodes
+              local comments_word = comments_count == 1 and "comment" or "comments"
+              local vt_msg =
+                string.format("    %d %s (%s)", comments_count, comments_word, utils.format_date(last_date))
+              vim.api.nvim_buf_set_extmark(bufnr, constants.OCTO_REVIEW_COMMENTS_NS, display_line - 1, -1, {
+                virt_text = { { vt_msg, "Comment" } },
+                virt_text_pos = "right_align",
+                strict = false,
+              })
+            end
+          end
+        end
+        break
+      end
+    end
+    ::continue::
   end
 end
 

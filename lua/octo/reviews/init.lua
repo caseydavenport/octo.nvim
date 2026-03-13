@@ -400,9 +400,51 @@ end
 function Review:add_comment(isSuggestion)
   -- check if we are on the diff layout and return early if not
   local bufnr = vim.api.nvim_get_current_buf()
-  local split, path = utils.get_split_and_path(bufnr)
-  if not split or not path then
-    return
+  local is_unified = self.layout:is_unified()
+
+  local split, path
+  local original_line1, original_line2
+
+  if is_unified then
+    -- In unified mode, resolve side and original line from the line map
+    local ok, props = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_diff_props")
+    if not ok or not props or props.split ~= "UNIFIED" then
+      return
+    end
+    path = props.path
+
+    local line_ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+    if not line_ok or not line_map then
+      return
+    end
+
+    -- Get display line range
+    local display_line1, display_line2 = utils.get_lines_from_context "visual"
+    if OctoLastCmdOpts ~= nil then
+      display_line1 = OctoLastCmdOpts.line1
+      display_line2 = OctoLastCmdOpts.line2
+    end
+
+    -- Resolve the side and original lines from the display lines
+    local entry1 = line_map[display_line1]
+    if not entry1 or entry1.side == "HEADER" then
+      utils.error "Cannot place comments on hunk headers"
+      return
+    end
+    split = entry1.side
+    original_line1 = entry1.line
+
+    local entry2 = line_map[display_line2]
+    if entry2 and entry2.side ~= "HEADER" then
+      original_line2 = entry2.line
+    else
+      original_line2 = original_line1
+    end
+  else
+    split, path = utils.get_split_and_path(bufnr)
+    if not split or not path then
+      return
+    end
   end
 
   local file = self.layout:get_current_file()
@@ -410,24 +452,27 @@ function Review:add_comment(isSuggestion)
     return
   end
 
-  -- get visual selected line range, used if coming from a keymap where current
-  -- mode can be evaluated.
-  local line1, line2 = utils.get_lines_from_context "visual"
-  -- if we came from the command line the command options will provide line
-  -- range
-  if OctoLastCmdOpts ~= nil then
-    line1 = OctoLastCmdOpts.line1
-    line2 = OctoLastCmdOpts.line2
+  -- Get line range (for non-unified mode or as fallback)
+  local line1, line2
+  if is_unified then
+    line1 = original_line1
+    line2 = original_line2
+  else
+    line1, line2 = utils.get_lines_from_context "visual"
+    if OctoLastCmdOpts ~= nil then
+      line1 = OctoLastCmdOpts.line1
+      line2 = OctoLastCmdOpts.line2
+    end
   end
 
   ---@type [integer, integer][], integer
   local comment_ranges, current_bufnr
   if split == "RIGHT" then
     comment_ranges = file.right_comment_ranges
-    current_bufnr = file.right_bufid
+    current_bufnr = is_unified and file.unified_bufid or file.right_bufid
   elseif split == "LEFT" then
     comment_ranges = file.left_comment_ranges
-    current_bufnr = file.left_bufid
+    current_bufnr = is_unified and file.unified_bufid or file.left_bufid
   else
     return
   end
@@ -453,66 +498,93 @@ function Review:add_comment(isSuggestion)
 
   self.layout:ensure_layout()
 
-  local alt_win = file:get_alternative_win(split)
-  if vim.api.nvim_win_is_valid(alt_win) then
-    local pr = file.pull_request
+  local pr = file.pull_request
 
-    -- create a thread stub representing the new comment
+  ---@type string, string
+  local commit, commit_abbrev
+  if split == "LEFT" then
+    commit = self.layout.left.commit
+    commit_abbrev = self.layout.left:abbrev()
+  elseif split == "RIGHT" then
+    commit = self.layout.right.commit
+    commit_abbrev = self.layout.right:abbrev()
+  end
+  local threads = {
+    ReviewThread:stub {
+      line1 = line1,
+      line2 = line2,
+      file_path = file.path,
+      split = split,
+      diff_hunk = diff_hunk,
+      commit = commit,
+      commit_abbrev = commit_abbrev,
+      review_id = self.id,
+    },
+  }
 
-    ---@type string, string
-    local commit, commit_abbrev
-    if split == "LEFT" then
-      commit = self.layout.left.commit
-      commit_abbrev = self.layout.left:abbrev()
-    elseif split == "RIGHT" then
-      commit = self.layout.right.commit
-      commit_abbrev = self.layout.right:abbrev()
-    end
-    local threads = {
-      ReviewThread:stub {
-        line1 = line1,
-        line2 = line2,
-        file_path = file.path,
-        split = split,
-        diff_hunk = diff_hunk,
-        commit = commit,
-        commit_abbrev = commit_abbrev,
-        review_id = self.id,
-      },
-    }
-
-    -- Make sure review thread panel is visible if not already
-    -- The thread panel could be hidden if user has `reviews.auto_show_threads` set to false in their config
-    -- or, less likely, if the add comment command is invoked before the autocmd has concluded,
+  if is_unified then
+    -- In unified mode, open thread panel as a bottom split
     thread_panel.show_review_threads(false)
     local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
     if thread_buffer then
       table.insert(file.associated_bufs, thread_buffer.bufnr)
-      vim.api.nvim_win_set_buf(alt_win, thread_buffer.bufnr)
-      vim.api.nvim_set_current_win(alt_win)
-      if isSuggestion then
-        local lines = vim.api.nvim_buf_get_lines(current_bufnr, line1 - 1, line2 --[[@as integer]], false)
-        local suggestion = { "```suggestion" }
-        vim.list_extend(suggestion, lines)
-        table.insert(suggestion, "```")
-        vim.api.nvim_buf_set_lines(thread_buffer.bufnr, -3, -2, false, suggestion)
-        vim.bo[thread_buffer.bufnr].modified = false
+
+      local thread_win = self.layout.thread_winid
+      if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
+        vim.cmd "botright split"
+        thread_win = vim.api.nvim_get_current_win()
+        vim.api.nvim_win_set_height(thread_win, 12)
+        self.layout.thread_winid = thread_win
       end
+
+      vim.api.nvim_win_set_buf(thread_win, thread_buffer.bufnr)
+      vim.api.nvim_set_current_win(thread_win)
       thread_buffer:configure()
       vim.cmd [[diffoff!]]
       vim.cmd [[normal! vvGk]]
       vim.cmd [[startinsert]]
 
       vim.keymap.set("n", "q", function()
-        thread_panel.hide_thread_buffer(split, file)
-        local file_win = file:get_win(split)
-        if vim.api.nvim_win_is_valid(file_win) then
-          vim.api.nvim_set_current_win(file_win)
+        thread_panel.hide_thread_buffer_unified(self)
+        if vim.api.nvim_win_is_valid(self.layout.unified_winid) then
+          vim.api.nvim_set_current_win(self.layout.unified_winid)
         end
       end, { buffer = thread_buffer.bufnr })
     end
   else
-    utils.error("Cannot find diff window " .. alt_win)
+    local alt_win = file:get_alternative_win(split)
+    if vim.api.nvim_win_is_valid(alt_win) then
+      -- Make sure review thread panel is visible if not already
+      thread_panel.show_review_threads(false)
+      local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
+      if thread_buffer then
+        table.insert(file.associated_bufs, thread_buffer.bufnr)
+        vim.api.nvim_win_set_buf(alt_win, thread_buffer.bufnr)
+        vim.api.nvim_set_current_win(alt_win)
+        if isSuggestion then
+          local lines = vim.api.nvim_buf_get_lines(current_bufnr, line1 - 1, line2 --[[@as integer]], false)
+          local suggestion = { "```suggestion" }
+          vim.list_extend(suggestion, lines)
+          table.insert(suggestion, "```")
+          vim.api.nvim_buf_set_lines(thread_buffer.bufnr, -3, -2, false, suggestion)
+          vim.bo[thread_buffer.bufnr].modified = false
+        end
+        thread_buffer:configure()
+        vim.cmd [[diffoff!]]
+        vim.cmd [[normal! vvGk]]
+        vim.cmd [[startinsert]]
+
+        vim.keymap.set("n", "q", function()
+          thread_panel.hide_thread_buffer(split, file)
+          local file_win = file:get_win(split)
+          if vim.api.nvim_win_is_valid(file_win) then
+            vim.api.nvim_set_current_win(file_win)
+          end
+        end, { buffer = thread_buffer.bufnr })
+      end
+    else
+      utils.error("Cannot find diff window " .. alt_win)
+    end
   end
 end
 
@@ -562,17 +634,40 @@ function M.jump_to_pending_review_thread(thread)
     if thread.path == file.path then
       current_review.layout:ensure_layout()
       current_review.layout:set_current_file(file)
-      local win = file:get_win(thread.diffSide)
-      if vim.api.nvim_win_is_valid(win) then
-        local review_level = current_review:get_level()
-        -- jumping to the original position in case we are reviewing any commit
-        -- jumping to the PR position if we are reviewing the last commit
-        -- This may result in a jump to the wrong line when the review is neither in the last commit or the original one
-        local line = review_level == "COMMIT" and thread.originalStartLine or thread.startLine
-        vim.api.nvim_set_current_win(win)
-        vim.api.nvim_win_set_cursor(win, { line, 0 })
+
+      if current_review.layout:is_unified() then
+        -- In unified mode, find the display line that corresponds to the thread
+        local win = current_review.layout.unified_winid
+        if vim.api.nvim_win_is_valid(win) then
+          local bufnr = vim.api.nvim_win_get_buf(win)
+          local ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+          if ok and line_map then
+            local review_level = current_review:get_level()
+            local target_line = review_level == "COMMIT" and thread.originalStartLine or thread.startLine
+            local target_side = thread.diffSide
+            for display_line, entry in ipairs(line_map) do
+              if entry.side == target_side and entry.line == target_line then
+                vim.api.nvim_set_current_win(win)
+                vim.api.nvim_win_set_cursor(win, { display_line, 0 })
+                return
+              end
+            end
+          end
+          -- Fallback: just focus the window
+          vim.api.nvim_set_current_win(win)
+        else
+          utils.error "Cannot find diff window"
+        end
       else
-        utils.error "Cannot find diff window"
+        local win = file:get_win(thread.diffSide)
+        if vim.api.nvim_win_is_valid(win) then
+          local review_level = current_review:get_level()
+          local line = review_level == "COMMIT" and thread.originalStartLine or thread.startLine
+          vim.api.nvim_set_current_win(win)
+          vim.api.nvim_win_set_cursor(win, { line, 0 })
+        else
+          utils.error "Cannot find diff window"
+        end
       end
       break
     end

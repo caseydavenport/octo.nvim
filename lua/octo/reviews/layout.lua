@@ -24,6 +24,8 @@ local win_reset_opts = {
 ---@field file_panel FilePanel
 ---@field left_winid integer
 ---@field right_winid integer
+---@field unified_winid integer|nil
+---@field thread_winid integer|nil
 ---@field files FileEntry[]
 ---@field selected_file_idx integer
 ---@field ready boolean
@@ -79,17 +81,29 @@ function Layout:close()
   end
 end
 
+function Layout:is_unified()
+  return config.values.reviews.diff_mode == "unified"
+end
+
 function Layout:init_layout()
-  self.left_winid = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_hl_ns(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS)
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffText", { link = "OctoReviewDiffDeleteText" })
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffChange", { link = "DiffDelete" })
-  vim.cmd "belowright vsp"
-  self.right_winid = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_hl_ns(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS)
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffText", { link = "OctoReviewDiffAddText" })
-  vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffChange", { link = "DiffAdd" })
-  self.file_panel:open()
+  if self:is_unified() then
+    self.unified_winid = vim.api.nvim_get_current_win()
+    -- Alias left/right to the single window so split-oriented code keeps working.
+    self.left_winid = self.unified_winid
+    self.right_winid = self.unified_winid
+    self.file_panel:open()
+  else
+    self.left_winid = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_hl_ns(self.left_winid, constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS)
+    vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffText", { link = "OctoReviewDiffDeleteText" })
+    vim.api.nvim_set_hl(constants.OCTO_REVIEW_LEFT_HIGHLIGHT_NS, "DiffChange", { link = "DiffDelete" })
+    vim.cmd "belowright vsp"
+    self.right_winid = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_hl_ns(self.right_winid, constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS)
+    vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffText", { link = "OctoReviewDiffAddText" })
+    vim.api.nvim_set_hl(constants.OCTO_REVIEW_RIGHT_HIGHLIGHT_NS, "DiffChange", { link = "DiffAdd" })
+    self.file_panel:open()
+  end
 end
 
 --- Get the currently selected file
@@ -133,17 +147,26 @@ function Layout:set_current_file(file, focus)
     end
     vim.cmd [[diffoff!]]
     self.files[self.selected_file_idx] = file
-    file:load_buffers(self.left_winid, self.right_winid)
+
+    if self:is_unified() then
+      file:load_unified_buffer(self.unified_winid)
+    else
+      file:load_buffers(self.left_winid, self.right_winid)
+    end
 
     -- Highlight file in file panel
     self.file_panel:highlight_file(self:get_current_file())
 
     -- Set focus on specified window
-    focus = focus or config.values.reviews.focus
-    if focus == "right" then
-      vim.api.nvim_set_current_win(self.right_winid)
+    if self:is_unified() then
+      vim.api.nvim_set_current_win(self.unified_winid)
     else
-      vim.api.nvim_set_current_win(self.left_winid)
+      focus = focus or config.values.reviews.focus
+      if focus == "right" then
+        vim.api.nvim_set_current_win(self.right_winid)
+      else
+        vim.api.nvim_set_current_win(self.left_winid)
+      end
     end
   end
 end
@@ -244,6 +267,17 @@ function Layout:select_prev_unviewed_file()
 end
 
 function Layout:validate_layout()
+  if self:is_unified() then
+    local state = {
+      tabpage = vim.api.nvim_tabpage_is_valid(self.tabpage),
+      unified_win = self.unified_winid and vim.api.nvim_win_is_valid(self.unified_winid),
+    }
+    state.valid = state.tabpage and state.unified_win
+    -- Keep left_win/right_win in sync for code that checks them
+    state.left_win = state.unified_win
+    state.right_win = state.unified_win
+    return state
+  end
   local state = {
     tabpage = vim.api.nvim_tabpage_is_valid(self.tabpage),
     left_win = vim.api.nvim_win_is_valid(self.left_winid),
@@ -269,7 +303,9 @@ function Layout:recover_layout(state)
   vim.api.nvim_set_current_tabpage(self.tabpage)
   self.file_panel:close()
 
-  if not state.left_win and not state.right_win then
+  if self:is_unified() then
+    self:init_layout()
+  elseif not state.left_win and not state.right_win then
     self:init_layout()
   elseif not state.left_win then
     vim.api.nvim_set_current_win(self.right_winid)
@@ -302,7 +338,11 @@ function Layout:file_safeguard()
     if cur then
       cur:detach_buffers()
     end
-    file_entry.load_null_buffers(self.left_winid, self.right_winid)
+    if self:is_unified() then
+      file_entry.load_null_buffer(self.unified_winid)
+    else
+      file_entry.load_null_buffers(self.left_winid, self.right_winid)
+    end
     return true
   end
   return false
@@ -336,7 +376,13 @@ end
 function Layout:fix_foreign_windows()
   local win_ids = vim.api.nvim_tabpage_list_wins(self.tabpage)
   for _, id in ipairs(win_ids) do
-    if not (id == self.file_panel.winid or id == self.left_winid or id == self.right_winid) then
+    local dominated
+    if self:is_unified() then
+      dominated = id == self.file_panel.winid or id == self.unified_winid or id == self.thread_winid
+    else
+      dominated = id == self.file_panel.winid or id == self.left_winid or id == self.right_winid
+    end
+    if not dominated then
       for k, v in pairs(win_reset_opts) do
         ---@diagnostic disable-next-line: no-unknown
         vim.wo[id][k] = v

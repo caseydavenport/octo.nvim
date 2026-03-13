@@ -295,6 +295,7 @@ function M.get_default_values()
       auto_show_threads = true, -- automatically show comment threads on cursor move
       focus = "right", -- focus right buffer on diff open
       show_virtual_text = true, -- show virtual text with comment count and date
+      diff_mode = "unified", -- "unified" for a single pane, "split" for side by side
     },
     runs = {
       icons = {

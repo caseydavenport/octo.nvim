@@ -1372,8 +1372,15 @@ end
 
 ---@param bufnr integer
 function M.is_thread_placed_in_buffer(thread, bufnr)
-  local split, path = M.get_split_and_path(bufnr)
-  if split == thread.diffSide and path == thread.path then
+  local ok, props = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_diff_props")
+  if not ok or not props then
+    return false
+  end
+  if props.split == "UNIFIED" then
+    -- In unified mode, both sides live in one buffer
+    return props.path == thread.path
+  end
+  if props.split == thread.diffSide and props.path == thread.path then
     return true
   end
   return false
@@ -1384,6 +1391,21 @@ end
 function M.get_split_and_path(bufnr)
   local ok, props = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_diff_props")
   if ok and props then
+    if props.split == "UNIFIED" then
+      -- Resolve UNIFIED to the actual side based on cursor position
+      local line_ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+      if line_ok and line_map then
+        local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+        if cursor_line <= #line_map then
+          local entry = line_map[cursor_line]
+          if entry and entry.side ~= "HEADER" then
+            return entry.side, props.path
+          end
+        end
+      end
+      -- Fallback to RIGHT if we can't resolve
+      return "RIGHT", props.path
+    end
     return props.split, props.path
   end
 end
