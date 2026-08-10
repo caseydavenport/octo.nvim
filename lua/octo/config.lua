@@ -59,6 +59,8 @@ local M = {}
 ---@field blue string
 ---@field dark_blue string
 ---@field purple string
+---@field thread_line string
+---@field thread_line_muted string
 
 ---@class OctoConfigFilePanel
 ---@field size number
@@ -332,6 +334,8 @@ function M.get_default_values()
       blue = "#58A6FF",
       dark_blue = "#0366d6",
       purple = "#6f42c1",
+      thread_line = "#1f2b3d",
+      thread_line_muted = "#23262b",
     },
     mappings_disable_default = false, -- disable default mappings if true, but will still adapt user mappings
     mappings = {

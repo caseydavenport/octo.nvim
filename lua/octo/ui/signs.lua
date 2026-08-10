@@ -6,12 +6,19 @@ local M = {}
 function M.setup()
   local conf = config.values
 
-  vim.cmd(string.format("sign define octo_thread text=%s texthl=OctoBlue", conf.comment_icon))
-  vim.cmd(string.format("sign define octo_thread_resolved text=%s  texthl=OctoGreen", conf.comment_icon))
-  vim.cmd(string.format("sign define octo_thread_outdated text=%s  texthl=OctoRed", conf.comment_icon))
-  vim.cmd(string.format("sign define octo_thread_pending text=%s texthl=OctoYellow", conf.comment_icon))
-  vim.cmd(string.format("sign define octo_thread_resolved_pending text=%s texthl=OctoYellow", conf.comment_icon))
-  vim.cmd(string.format("sign define octo_thread_outdated_pending text=%s texthl=OctoYellow", conf.comment_icon))
+  -- A sign icon alone is easy to miss, so tint the commented lines too.
+  local thread_signs = {
+    { "octo_thread", "OctoBlue", "OctoThreadLine" },
+    { "octo_thread_resolved", "OctoGreen", "OctoThreadLineResolved" },
+    { "octo_thread_outdated", "OctoRed", "OctoThreadLineResolved" },
+    { "octo_thread_pending", "OctoYellow", "OctoThreadLine" },
+    { "octo_thread_resolved_pending", "OctoYellow", "OctoThreadLineResolved" },
+    { "octo_thread_outdated_pending", "OctoYellow", "OctoThreadLineResolved" },
+  }
+  for _, sign in ipairs(thread_signs) do
+    local name, texthl, linehl = sign[1], sign[2], sign[3]
+    vim.cmd(string.format("sign define %s text=%s texthl=%s linehl=%s", name, conf.comment_icon, texthl, linehl))
+  end
 
   vim.cmd [[sign define octo_comment_range numhl=OctoGreen]]
   vim.cmd [[sign define octo_clean_block_start text=┌ linehl=OctoEditable]]

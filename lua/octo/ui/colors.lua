@@ -53,6 +53,8 @@ local function get_hl_groups()
     NormalFloat = { fg = get_fg "Normal" or colors.white },
     Viewer = { fg = colors.black, bg = colors.blue },
     Editable = { bg = float_bg },
+    ThreadLine = { bg = colors.thread_line },
+    ThreadLineResolved = { bg = colors.thread_line_muted },
     Strikethrough = { fg = colors.grey, strikethrough = true },
     Underline = { fg = colors.white, underline = true },
     Bubble = { fg = colors.white, bg = colors.grey },
