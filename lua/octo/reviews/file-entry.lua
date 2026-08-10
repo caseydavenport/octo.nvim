@@ -374,18 +374,12 @@ function FileEntry:_generate_unified_lines()
     local hunk_lines = vim.split(hunk, "\n")
     local header = hunk_lines[1]
 
-    -- Parse hunk header
+    -- Parse hunk header. Counts are omitted for single-line ranges, e.g. "@@ -1 +1,2 @@".
     local left_start, right_start
-    local _, _, ls, _, rs = string.find(header, "^%s*%-(%d+),(%d+)%s+%+(%d+),(%d+)%s*@@")
+    local _, _, ls, _, rs = string.find(header, "^%s*%-(%d+),?(%d*)%s+%+(%d+),?(%d*)%s*@@")
     if ls then
       left_start = tonumber(ls)
       right_start = tonumber(rs)
-    else
-      _, _, ls, _, rs = string.find(header, "^%s*%-(%d+),(%d+)%s+%+(%d+)%s*@@")
-      if ls then
-        left_start = tonumber(ls)
-        right_start = tonumber(rs)
-      end
     end
 
     if left_start and right_start then
@@ -557,6 +551,10 @@ function FileEntry:_place_signs_with_virtual_text(show_virtual_text)
   local current_review = require("octo.reviews").get_current_review()
   if not current_review then
     return
+  end
+  -- The split path treats file lines as buffer lines, which is wrong for a unified buffer.
+  if current_review.layout:is_unified() then
+    return self:place_signs_unified()
   end
   local review_level = current_review:get_level()
   local splits = {
