@@ -58,82 +58,72 @@ function M.show_review_threads(jump_to_buffer)
     end
   end
 
-  -- render thread buffer if there are threads at the current line
-  if #threads_at_cursor > 0 then
-    review.layout:ensure_layout()
-    local is_unified = review.layout:is_unified()
+  local is_unified = review.layout:is_unified()
 
-    if is_unified then
-      -- In unified mode, threads get their own column beside the diff.
-      local thread_buffer = M.create_thread_buffer(threads_at_cursor, pr.repo, pr.number, split, file.path)
-      if thread_buffer then
-        table.insert(file.associated_bufs, thread_buffer.bufnr)
-
-        -- Create or reuse the thread window
-        local thread_win = review.layout.thread_winid
-        if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
-          -- Comments read better in a tall narrow column than a short wide one.
-          vim.cmd "botright vsplit"
-          thread_win = vim.api.nvim_get_current_win()
-          vim.api.nvim_win_set_width(thread_win, math.max(60, math.floor(vim.o.columns * 0.35)))
-          vim.wo[thread_win].wrap = true
-          vim.wo[thread_win].linebreak = true
-          review.layout.thread_winid = thread_win
-        end
-
-        vim.api.nvim_win_set_buf(thread_win, thread_buffer.bufnr)
-        thread_buffer:configure()
-
-        vim.keymap.set("n", "q", function()
-          M.hide_thread_buffer_unified(review)
-          if vim.api.nvim_win_is_valid(review.layout.unified_winid) then
-            vim.api.nvim_set_current_win(review.layout.unified_winid)
-          end
-        end, { buffer = thread_buffer.bufnr })
-
-        if jump_to_buffer then
-          vim.api.nvim_set_current_win(thread_win)
-        end
-        vim.api.nvim_buf_call(thread_buffer.bufnr, function()
-          vim.cmd [[diffoff!]]
-        end)
-      end
-    else
-      local alt_win = file:get_alternative_win(split)
-      if vim.api.nvim_win_is_valid(alt_win) then
-        local thread_buffer = M.create_thread_buffer(threads_at_cursor, pr.repo, pr.number, split, file.path)
-        if thread_buffer then
-          table.insert(file.associated_bufs, thread_buffer.bufnr)
-          vim.api.nvim_win_set_buf(alt_win, thread_buffer.bufnr)
-          thread_buffer:configure()
-
-          vim.keymap.set("n", "q", function()
-            M.hide_thread_buffer(split, file)
-            local file_win = file:get_win(split)
-            if vim.api.nvim_win_is_valid(file_win) then
-              vim.api.nvim_set_current_win(file_win)
-            end
-          end, { buffer = thread_buffer.bufnr })
-
-          if jump_to_buffer then
-            vim.api.nvim_set_current_win(alt_win)
-          end
-          vim.api.nvim_buf_call(thread_buffer.bufnr, function()
-            vim.cmd [[diffoff!]]
-            pcall(vim.cmd.normal, "]c")
-          end)
-        end
-      end
-    end
-  else
+  if #threads_at_cursor == 0 then
     -- no threads at the current line, hide the thread buffer
-    local is_unified = review.layout:is_unified()
     if is_unified then
       M.hide_thread_buffer_unified(review)
     else
       M.hide_thread_buffer(split, file)
     end
+    return
   end
+
+  review.layout:ensure_layout()
+
+  -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
+  local thread_win, on_close
+  if is_unified then
+    thread_win = review.layout.thread_winid
+    if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
+      -- Comments read better in a tall narrow column than a short wide one.
+      vim.cmd "botright vsplit"
+      thread_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_width(thread_win, math.max(60, math.floor(vim.o.columns * 0.35)))
+      vim.wo[thread_win].wrap = true
+      vim.wo[thread_win].linebreak = true
+      review.layout.thread_winid = thread_win
+    end
+    on_close = function()
+      M.hide_thread_buffer_unified(review)
+      if vim.api.nvim_win_is_valid(review.layout.unified_winid) then
+        vim.api.nvim_set_current_win(review.layout.unified_winid)
+      end
+    end
+  else
+    thread_win = file:get_alternative_win(split)
+    if not vim.api.nvim_win_is_valid(thread_win) then
+      return
+    end
+    on_close = function()
+      M.hide_thread_buffer(split, file)
+      local file_win = file:get_win(split)
+      if vim.api.nvim_win_is_valid(file_win) then
+        vim.api.nvim_set_current_win(file_win)
+      end
+    end
+  end
+
+  local thread_buffer = M.create_thread_buffer(threads_at_cursor, pr.repo, pr.number, split, file.path)
+  if not thread_buffer then
+    return
+  end
+  table.insert(file.associated_bufs, thread_buffer.bufnr)
+  vim.api.nvim_win_set_buf(thread_win, thread_buffer.bufnr)
+  thread_buffer:configure()
+
+  vim.keymap.set("n", "q", on_close, { buffer = thread_buffer.bufnr })
+
+  if jump_to_buffer then
+    vim.api.nvim_set_current_win(thread_win)
+  end
+  vim.api.nvim_buf_call(thread_buffer.bufnr, function()
+    vim.cmd [[diffoff!]]
+    if not is_unified then
+      pcall(vim.cmd.normal, "]c")
+    end
+  end)
 end
 
 ---Hide the thread buffer in unified mode by closing the thread window.

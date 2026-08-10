@@ -402,67 +402,43 @@ function Review:add_comment(isSuggestion)
   local bufnr = vim.api.nvim_get_current_buf()
   local is_unified = self.layout:is_unified()
 
-  local split, path
-  local original_line1, original_line2
+  -- Selected range in buffer rows; in unified mode these differ from the file lines.
+  local buf_line1, buf_line2 = utils.get_lines_from_context "visual"
+  if OctoLastCmdOpts ~= nil then
+    buf_line1 = OctoLastCmdOpts.line1
+    buf_line2 = OctoLastCmdOpts.line2
+  end
 
+  local split, path, line1, line2
   if is_unified then
-    -- In unified mode, resolve side and original line from the line map
     local ok, props = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_diff_props")
-    if not ok or not props or props.split ~= "UNIFIED" then
+    local line_ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+    if not ok or not props or props.split ~= "UNIFIED" or not line_ok or not line_map then
       return
     end
     path = props.path
 
-    local line_ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
-    if not line_ok or not line_map then
-      return
-    end
-
-    -- Get display line range
-    local display_line1, display_line2 = utils.get_lines_from_context "visual"
-    if OctoLastCmdOpts ~= nil then
-      display_line1 = OctoLastCmdOpts.line1
-      display_line2 = OctoLastCmdOpts.line2
-    end
-
-    -- Resolve the side and original lines from the display lines
-    local entry1 = line_map[display_line1]
+    local entry1 = line_map[buf_line1]
     if not entry1 or entry1.side == "HEADER" then
       utils.error "Cannot place comments on hunk headers"
       return
     end
     split = entry1.side
-    original_line1 = entry1.line
+    line1 = entry1.line
 
-    local entry2 = line_map[display_line2]
-    if entry2 and entry2.side ~= "HEADER" then
-      original_line2 = entry2.line
-    else
-      original_line2 = original_line1
-    end
+    local entry2 = line_map[buf_line2]
+    line2 = (entry2 and entry2.side ~= "HEADER") and entry2.line or line1
   else
     split, path = utils.get_split_and_path(bufnr)
     if not split or not path then
       return
     end
+    line1, line2 = buf_line1, buf_line2
   end
 
   local file = self.layout:get_current_file()
   if not file then
     return
-  end
-
-  -- Get line range (for non-unified mode or as fallback)
-  local line1, line2
-  if is_unified then
-    line1 = original_line1
-    line2 = original_line2
-  else
-    line1, line2 = utils.get_lines_from_context "visual"
-    if OctoLastCmdOpts ~= nil then
-      line1 = OctoLastCmdOpts.line1
-      line2 = OctoLastCmdOpts.line2
-    end
   end
 
   ---@type [integer, integer][], integer
@@ -522,70 +498,68 @@ function Review:add_comment(isSuggestion)
     },
   }
 
+  -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
+  local thread_win, on_close
   if is_unified then
-    -- In unified mode, open thread panel as a bottom split
-    thread_panel.show_review_threads(false)
-    local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
-    if thread_buffer then
-      table.insert(file.associated_bufs, thread_buffer.bufnr)
-
-      local thread_win = self.layout.thread_winid
-      if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
-        vim.cmd "botright split"
-        thread_win = vim.api.nvim_get_current_win()
-        vim.api.nvim_win_set_height(thread_win, 12)
-        self.layout.thread_winid = thread_win
+    thread_win = self.layout.thread_winid
+    if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
+      vim.cmd "botright split"
+      thread_win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_height(thread_win, 12)
+      self.layout.thread_winid = thread_win
+    end
+    on_close = function()
+      thread_panel.hide_thread_buffer_unified(self)
+      if vim.api.nvim_win_is_valid(self.layout.unified_winid) then
+        vim.api.nvim_set_current_win(self.layout.unified_winid)
       end
-
-      vim.api.nvim_win_set_buf(thread_win, thread_buffer.bufnr)
-      vim.api.nvim_set_current_win(thread_win)
-      thread_buffer:configure()
-      vim.cmd [[diffoff!]]
-      vim.cmd [[normal! vvGk]]
-      vim.cmd [[startinsert]]
-
-      vim.keymap.set("n", "q", function()
-        thread_panel.hide_thread_buffer_unified(self)
-        if vim.api.nvim_win_is_valid(self.layout.unified_winid) then
-          vim.api.nvim_set_current_win(self.layout.unified_winid)
-        end
-      end, { buffer = thread_buffer.bufnr })
     end
   else
-    local alt_win = file:get_alternative_win(split)
-    if vim.api.nvim_win_is_valid(alt_win) then
-      -- Make sure review thread panel is visible if not already
-      thread_panel.show_review_threads(false)
-      local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
-      if thread_buffer then
-        table.insert(file.associated_bufs, thread_buffer.bufnr)
-        vim.api.nvim_win_set_buf(alt_win, thread_buffer.bufnr)
-        vim.api.nvim_set_current_win(alt_win)
-        if isSuggestion then
-          local lines = vim.api.nvim_buf_get_lines(current_bufnr, line1 - 1, line2 --[[@as integer]], false)
-          local suggestion = { "```suggestion" }
-          vim.list_extend(suggestion, lines)
-          table.insert(suggestion, "```")
-          vim.api.nvim_buf_set_lines(thread_buffer.bufnr, -3, -2, false, suggestion)
-          vim.bo[thread_buffer.bufnr].modified = false
-        end
-        thread_buffer:configure()
-        vim.cmd [[diffoff!]]
-        vim.cmd [[normal! vvGk]]
-        vim.cmd [[startinsert]]
-
-        vim.keymap.set("n", "q", function()
-          thread_panel.hide_thread_buffer(split, file)
-          local file_win = file:get_win(split)
-          if vim.api.nvim_win_is_valid(file_win) then
-            vim.api.nvim_set_current_win(file_win)
-          end
-        end, { buffer = thread_buffer.bufnr })
+    thread_win = file:get_alternative_win(split)
+    if not vim.api.nvim_win_is_valid(thread_win) then
+      utils.error("Cannot find diff window " .. thread_win)
+      return
+    end
+    on_close = function()
+      thread_panel.hide_thread_buffer(split, file)
+      local file_win = file:get_win(split)
+      if vim.api.nvim_win_is_valid(file_win) then
+        vim.api.nvim_set_current_win(file_win)
       end
-    else
-      utils.error("Cannot find diff window " .. alt_win)
     end
   end
+
+  -- Make sure review thread panel is visible if not already
+  thread_panel.show_review_threads(false)
+  local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
+  if not thread_buffer then
+    return
+  end
+  table.insert(file.associated_bufs, thread_buffer.bufnr)
+  vim.api.nvim_win_set_buf(thread_win, thread_buffer.bufnr)
+  vim.api.nvim_set_current_win(thread_win)
+
+  if isSuggestion then
+    local lines = vim.api.nvim_buf_get_lines(current_bufnr, buf_line1 - 1, buf_line2 --[[@as integer]], false)
+    if is_unified then
+      -- Unified rows carry a leading "+", "-" or space that is not part of the file.
+      for i, l in ipairs(lines) do
+        lines[i] = l:sub(2)
+      end
+    end
+    local suggestion = { "```suggestion" }
+    vim.list_extend(suggestion, lines)
+    table.insert(suggestion, "```")
+    vim.api.nvim_buf_set_lines(thread_buffer.bufnr, -3, -2, false, suggestion)
+    vim.bo[thread_buffer.bufnr].modified = false
+  end
+
+  thread_buffer:configure()
+  vim.cmd [[diffoff!]]
+  vim.cmd [[normal! vvGk]]
+  vim.cmd [[startinsert]]
+
+  vim.keymap.set("n", "q", on_close, { buffer = thread_buffer.bufnr })
 end
 
 ---Get the review level, aka whether the review is at commit or PR level
