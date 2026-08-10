@@ -64,7 +64,7 @@ function M.show_review_threads(jump_to_buffer)
     local is_unified = review.layout:is_unified()
 
     if is_unified then
-      -- In unified mode, use a bottom split for threads
+      -- In unified mode, threads get their own column beside the diff.
       local thread_buffer = M.create_thread_buffer(threads_at_cursor, pr.repo, pr.number, split, file.path)
       if thread_buffer then
         table.insert(file.associated_bufs, thread_buffer.bufnr)
@@ -72,9 +72,12 @@ function M.show_review_threads(jump_to_buffer)
         -- Create or reuse the thread window
         local thread_win = review.layout.thread_winid
         if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
-          vim.cmd "botright split"
+          -- Comments read better in a tall narrow column than a short wide one.
+          vim.cmd "botright vsplit"
           thread_win = vim.api.nvim_get_current_win()
-          vim.api.nvim_win_set_height(thread_win, 12)
+          vim.api.nvim_win_set_width(thread_win, math.max(60, math.floor(vim.o.columns * 0.35)))
+          vim.wo[thread_win].wrap = true
+          vim.wo[thread_win].linebreak = true
           review.layout.thread_winid = thread_win
         end
 
