@@ -110,6 +110,16 @@ function M.go_to_file()
   local line = vim.api.nvim_win_get_cursor(0)[1]
   if utils.in_diff_window(bufnr) then
     _, path = utils.get_split_and_path(bufnr)
+    -- Unified rows are display rows, so translate back to a file line.
+    local ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+    if ok and line_map then
+      local entry = line_map[line]
+      if not entry or entry.side == "HEADER" then
+        utils.error "Cannot jump from a hunk header"
+        return
+      end
+      line = entry.line
+    end
   else
     local buffer = octo_buffers[bufnr]
     if not buffer then
