@@ -1,7 +1,12 @@
 local config = require "octo.config"
+local constants = require "octo.constants"
 local vim = vim
 
 local M = {}
+
+---Line tint for each thread sign, keyed by sign name.
+---@type table<string, string>
+local thread_line_hl = {}
 
 function M.setup()
   local conf = config.values
@@ -18,6 +23,7 @@ function M.setup()
   for _, sign in ipairs(thread_signs) do
     local name, texthl, linehl = sign[1], sign[2], sign[3]
     vim.cmd(string.format("sign define %s text=%s texthl=%s linehl=%s", name, conf.comment_icon, texthl, linehl))
+    thread_line_hl[name] = linehl
   end
 
   vim.cmd [[sign define octo_comment_range numhl=OctoGreen]]
@@ -43,13 +49,19 @@ function M.place(name, bufnr, line)
   if config.values.ui.use_signcolumn then
     pcall(vim.fn.sign_place, 0, "octo_ns", name, bufnr, { lnum = line + 1 })
   end
-  -- status column
-  -- TODO: implement status column support for thread signs
+  -- The status column cannot paint a line, so tint via extmark in either mode.
+  local linehl = thread_line_hl[name]
+  if linehl then
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, constants.OCTO_THREAD_TINT_NS, line, 0, {
+      line_hl_group = linehl,
+    })
+  end
 end
 
 ---@param bufnr? integer
 function M.unplace(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, constants.OCTO_THREAD_TINT_NS, 0, -1)
   -- sign column
   if config.values.ui.use_signcolumn then
     pcall(vim.fn.sign_unplace, "octo_ns", { buffer = bufnr })
