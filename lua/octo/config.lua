@@ -514,6 +514,7 @@ function M.get_default_values()
         close_review_tab = { lhs = "<C-c>", desc = "close review tab" },
         toggle_viewed = { lhs = "<localleader><space>", desc = "toggle viewer viewed state" },
         goto_file = { lhs = "gf", desc = "go to file" },
+        browse_file = { lhs = "<localleader>gf", desc = "browse the PR's version of the file" },
         copy_sha = { lhs = "<C-e>", desc = "copy commit SHA to system clipboard" },
         review_commits = { lhs = "<localleader>C", desc = "review PR commits" },
       },

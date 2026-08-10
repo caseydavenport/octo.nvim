@@ -103,22 +103,36 @@ local function open_file_if_found(path, line)
   return false
 end
 
+---Resolve the diff side and file line under the cursor in a review diff buffer.
+---@param bufnr integer
+---@return string?, string?, integer?
+local function cursor_diff_position(bufnr)
+  local split, path = utils.get_split_and_path(bufnr)
+  if not split or not path then
+    return
+  end
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+  if ok and line_map then
+    local entry = line_map[line]
+    if not entry or entry.side == "HEADER" then
+      return
+    end
+    line = entry.line
+  end
+  return split, path, line
+end
+
 function M.go_to_file()
   local bufnr = vim.api.nvim_get_current_buf()
   ---@type string?
   local path = ""
   local line = vim.api.nvim_win_get_cursor(0)[1]
   if utils.in_diff_window(bufnr) then
-    _, path = utils.get_split_and_path(bufnr)
-    -- Unified rows are display rows, so translate back to a file line.
-    local ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
-    if ok and line_map then
-      local entry = line_map[line]
-      if not entry or entry.side == "HEADER" then
-        utils.error "Cannot jump from a hunk header"
-        return
-      end
-      line = entry.line
+    _, path, line = cursor_diff_position(bufnr)
+    if not path then
+      utils.error "Cannot resolve a file line here"
+      return
     end
   else
     local buffer = octo_buffers[bufnr]
@@ -140,6 +154,55 @@ function M.go_to_file()
   if not result then
     utils.error "Cannot find file in CWD or git path"
   end
+end
+
+---Open the PR's version of the file under the cursor in a read-only tab.
+function M.browse_file()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not utils.in_diff_window(bufnr) then
+    utils.error "Not in a review diff window"
+    return
+  end
+
+  local review = require("octo.reviews").get_current_review()
+  local file = review and review.layout:get_current_file()
+  if not file then
+    utils.error "No file under review"
+    return
+  end
+
+  local split, path, line = cursor_diff_position(bufnr)
+  if not split then
+    utils.error "Cannot resolve a file line here"
+    return
+  end
+
+  local lines, commit
+  if split == "LEFT" then
+    lines, commit = file.left_lines, review.layout.left:abbrev()
+    if file.status == "R" and file.previous_path then
+      path = file.previous_path
+    end
+  else
+    lines, commit = file.right_lines, review.layout.right:abbrev()
+  end
+  if not lines or #lines == 0 then
+    utils.error "File contents are not loaded yet"
+    return
+  end
+
+  vim.cmd "tabnew"
+  local buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_name(buf, string.format("octo://%s/%s", commit, path))
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = vim.filetype.match { filename = path, buf = buf } or ""
+  vim.api.nvim_win_set_cursor(0, { math.min(line, #lines), 0 })
+  vim.cmd "normal! zz"
+  vim.keymap.set("n", "q", "<cmd>tabclose<cr>", { buffer = buf, desc = "close file browser" })
 end
 
 function M.go_to_issue()
