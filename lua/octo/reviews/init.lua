@@ -498,6 +498,9 @@ function Review:add_comment(isSuggestion)
     },
   }
 
+  -- Make sure review thread panel is visible if not already
+  thread_panel.show_review_threads(false)
+
   -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
   local thread_win, on_close
   if is_unified then
@@ -529,8 +532,6 @@ function Review:add_comment(isSuggestion)
     end
   end
 
-  -- Make sure review thread panel is visible if not already
-  thread_panel.show_review_threads(false)
   local thread_buffer = thread_panel.create_thread_buffer(threads, pr.repo, pr.number, split, file.path)
   if not thread_buffer then
     return
