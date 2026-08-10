@@ -187,20 +187,26 @@ function M.browse_file()
     lines, commit = file.right_lines, review.layout.right:abbrev()
   end
   if not lines or #lines == 0 then
-    utils.error "File contents are not loaded yet"
+    utils.error(string.format("No %s contents for %s; try reopening the file in the review", split, path))
     return
   end
 
-  vim.cmd "tabnew"
-  local buf = vim.api.nvim_get_current_buf()
+  -- Build the buffer before the tab exists so no autocmd sees it half-populated.
+  local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_name(buf, string.format("octo://%s/%s", commit, path))
+  -- Anything matching "octo://" gets claimed by octo's own buffer autocmds.
+  vim.api.nvim_buf_set_name(buf, string.format("octofile://%s/%s", commit, path))
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = vim.filetype.match { filename = path, buf = buf } or ""
-  vim.api.nvim_win_set_cursor(0, { math.min(line, #lines), 0 })
+
+  vim.cmd "tabnew"
+  local scratch = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_buf(0, buf)
+  pcall(vim.api.nvim_buf_delete, scratch, { force = true })
+  pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line, #lines), 0 })
   vim.cmd "normal! zz"
   vim.keymap.set("n", "q", "<cmd>tabclose<cr>", { buffer = buf, desc = "close file browser" })
 end
