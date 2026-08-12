@@ -504,13 +504,7 @@ function Review:add_comment(isSuggestion)
   -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
   local thread_win, on_close
   if is_unified then
-    thread_win = self.layout.thread_winid
-    if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
-      vim.cmd "botright split"
-      thread_win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_height(thread_win, 12)
-      self.layout.thread_winid = thread_win
-    end
+    thread_win = thread_panel.get_thread_win_unified(self)
     on_close = function()
       thread_panel.hide_thread_buffer_unified(self)
       if vim.api.nvim_win_is_valid(self.layout.unified_winid) then

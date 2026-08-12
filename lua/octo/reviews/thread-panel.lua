@@ -92,16 +92,7 @@ function M.show_review_threads(jump_to_buffer)
   -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
   local thread_win, on_close
   if is_unified then
-    thread_win = review.layout.thread_winid
-    if not thread_win or not vim.api.nvim_win_is_valid(thread_win) then
-      -- Comments read better in a tall narrow column than a short wide one.
-      vim.cmd "botright vsplit"
-      thread_win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_width(thread_win, math.max(60, math.floor(vim.o.columns * 0.35)))
-      vim.wo[thread_win].wrap = true
-      vim.wo[thread_win].linebreak = true
-      review.layout.thread_winid = thread_win
-    end
+    thread_win = M.get_thread_win_unified(review)
     on_close = function()
       M.hide_thread_buffer_unified(review)
       if vim.api.nvim_win_is_valid(review.layout.unified_winid) then
@@ -144,6 +135,24 @@ function M.show_review_threads(jump_to_buffer)
       pcall(vim.cmd.normal, "]c")
     end
   end)
+end
+
+---Return the unified-mode thread window, opening it beside the diff if needed.
+---@param review Review
+---@return integer
+function M.get_thread_win_unified(review)
+  local thread_win = review.layout.thread_winid
+  if thread_win and vim.api.nvim_win_is_valid(thread_win) then
+    return thread_win
+  end
+  -- Comments read better in a tall narrow column than a short wide one.
+  vim.cmd "botright vsplit"
+  thread_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_width(thread_win, math.max(60, math.floor(vim.o.columns * 0.35)))
+  vim.wo[thread_win].wrap = true
+  vim.wo[thread_win].linebreak = true
+  review.layout.thread_winid = thread_win
+  return thread_win
 end
 
 ---Hide the thread buffer in unified mode by closing the thread window.
