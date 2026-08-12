@@ -34,17 +34,34 @@ function M.show_review_threads(jump_to_buffer)
   local threads = vim.tbl_values(review.threads)
   local line = vim.api.nvim_win_get_cursor(0)[1]
 
+  local is_unified = review.layout:is_unified()
+  if is_unified then
+    -- Unified rows are display rows; threads are numbered against a single side.
+    local line_ok, line_map = pcall(vim.api.nvim_buf_get_var, bufnr, "octo_unified_line_map")
+    if not line_ok or not line_map then
+      return
+    end
+    local entry = line_map[line]
+    if not entry or entry.side == "HEADER" then
+      M.hide_thread_buffer_unified(review)
+      return
+    end
+    line = entry.line
+  end
+
   -- get threads associated with current line
   local threads_at_cursor = {}
   for _, thread in ipairs(threads) do
+    local side_matches = not is_unified or thread.diffSide == split
     if
       review_level == "PR"
+      and side_matches
       and utils.is_thread_placed_in_buffer(thread, bufnr)
       and thread.startLine <= line
       and thread.line >= line
     then
       table.insert(threads_at_cursor, thread)
-    elseif review_level == "COMMIT" then
+    elseif review_level == "COMMIT" and side_matches then
       for _, comment in ipairs(thread.comments.nodes) do
         if
           review.layout.right.commit == comment.originalCommit.oid
@@ -57,8 +74,6 @@ function M.show_review_threads(jump_to_buffer)
       end
     end
   end
-
-  local is_unified = review.layout:is_unified()
 
   if #threads_at_cursor == 0 then
     -- no threads at the current line, hide the thread buffer
