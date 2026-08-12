@@ -72,6 +72,8 @@ function M.show_review_threads(jump_to_buffer)
 
   review.layout:ensure_layout()
 
+  local origin_win = vim.api.nvim_get_current_win()
+
   -- Pick the window the thread buffer goes in, and how "q" gets back to the diff.
   local thread_win, on_close
   if is_unified then
@@ -117,6 +119,9 @@ function M.show_review_threads(jump_to_buffer)
 
   if jump_to_buffer then
     vim.api.nvim_set_current_win(thread_win)
+  elseif vim.api.nvim_win_is_valid(origin_win) then
+    -- Opening the split focused it; skimming the diff should not move the cursor.
+    vim.api.nvim_set_current_win(origin_win)
   end
   vim.api.nvim_buf_call(thread_buffer.bufnr, function()
     vim.cmd [[diffoff!]]
