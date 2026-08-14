@@ -145,8 +145,11 @@ function FileEntry:toggle_viewed()
           self.viewed_state = next_state
           local current_review = require("octo.reviews").get_current_review()
           if current_review then
-            current_review.layout.file_panel:render()
-            current_review.layout.file_panel:redraw()
+            local layout = current_review.layout
+            layout.file_panel:render()
+            layout.file_panel:redraw()
+            -- Redrawing replaces every line, dropping the selected-file highlight.
+            layout.file_panel:highlight_file(layout:get_current_file())
           end
         end,
       },
